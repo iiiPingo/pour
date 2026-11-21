@@ -17,11 +17,13 @@ namespace Pour
         {
             using (var mutex = new Mutex(true, "Pour.SingleInstance.v1", out bool created))
             {
+                bool exit = args.Contains("--exit");
                 if (!created)
                 {
-                    Native.PostMessage((IntPtr)0xffff, Native.WM_SHOWPOUR, IntPtr.Zero, IntPtr.Zero);
+                    Native.PostMessage((IntPtr)0xffff, exit ? Native.WM_EXITPOUR : Native.WM_SHOWPOUR, IntPtr.Zero, IntPtr.Zero);
                     return;
                 }
+                if (exit) return;   // asked to close, but Pour wasn't running
                 try { ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | (SecurityProtocolType)12288; }
                 catch { ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12; }
                 Application.EnableVisualStyles();
@@ -69,6 +71,7 @@ namespace Pour
             if (m.Msg == 0x031D) app.OnClipboard();
             else if (m.Msg == 0x0312) app.OnHotkey();
             else if (m.Msg == Native.WM_SHOWPOUR) app.ShowPanel();
+            else if (m.Msg == Native.WM_EXITPOUR) app.ExitSoon();
             base.WndProc(ref m);
         }
         public void Dispose()
@@ -304,6 +307,14 @@ namespace Pour
             Dl.ToolsReady = wasReady || Tools.Ready;
             Dl.Pump();
             Balloon("Pour", r, ToolTipIcon.None, null);
+        }
+
+        // clean exit on request: after this message is handled, not inside it
+        public void ExitSoon()
+        {
+            var t = new System.Windows.Forms.Timer { Interval = 10 };
+            t.Tick += (o, e) => { t.Stop(); t.Dispose(); try { Exit(); } catch (Exception ex) { Log.Crash(ex); ExitThread(); } };
+            t.Start();
         }
 
         void Exit()

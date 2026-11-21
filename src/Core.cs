@@ -128,6 +128,7 @@ namespace Pour
         [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
 
         public static readonly int WM_SHOWPOUR = RegisterWindowMessage("Pour.ShowPanel.v1");
+        public static readonly int WM_EXITPOUR = RegisterWindowMessage("Pour.Exit.v1");   // "Pour.exe --exit" (Minibar's Stop / updates)
     }
 
     // ---------------------------------------------------------------- settings
@@ -683,41 +684,49 @@ namespace Pour
     // ---------------------------------------------------------------- tray icon renderer
     static class TrayArt
     {
-        // progress: -1 = idle, 0..1 = downloading; done = green full ring
+        // A solid disc so it's easy to spot and click in the tray: terracotta when idle, a dark disc with a thick
+        // progress ring while downloading, green when done, red on an error; always a white dripper. Drawn 4x and scaled down.
         public static Icon Render(double progress, bool done, bool error)
         {
             int sz = SystemInformation.SmallIconSize.Width;
             if (sz < 16) sz = 16;
+            int big = sz * 4;
+            using (var hi = new Bitmap(big, big))
             using (var bmp = new Bitmap(sz, sz))
             {
-                using (var g = Graphics.FromImage(bmp))
+                using (var g = Graphics.FromImage(hi))
                 {
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     g.Clear(Color.Transparent);
-                    float pw = Math.Max(1.6f, sz * 0.11f);
-                    var ring = new RectangleF(pw / 2 + 0.5f, pw / 2 + 0.5f, sz - pw - 1, sz - pw - 1);
-                    bool active = progress >= 0;
-                    Color track = active || done || error ? Color.FromArgb(150, 110, 110, 110) : Color.FromArgb(120, 200, 200, 200);
-                    using (var tp = new Pen(track, pw)) g.DrawEllipse(tp, ring);
-                    if (done || error)
+                    var disc = new RectangleF(big * 0.02f, big * 0.02f, big * 0.96f, big * 0.96f);
+                    bool active = progress >= 0 && !done && !error;
+                    Color fill = error ? Theme.Red : done ? Theme.Green : active ? Color.FromArgb(255, 64, 38, 32) : Theme.Accent;
+                    using (var b = new SolidBrush(fill)) g.FillEllipse(b, disc);
+                    if (active)
                     {
-                        using (var dp = new Pen(error ? Theme.Red : Theme.Green, pw)) g.DrawEllipse(dp, ring);
-                    }
-                    else if (active)
-                    {
+                        float pw = big * 0.16f;
+                        var ring = new RectangleF(pw / 2 + big * 0.02f, pw / 2 + big * 0.02f, big * 0.96f - pw, big * 0.96f - pw);
+                        using (var tp = new Pen(Color.FromArgb(90, 255, 255, 255), pw)) g.DrawEllipse(tp, ring);
                         float sweep = (float)Math.Max(0.04, Math.Min(1, progress)) * 360f;
                         using (var ap = new Pen(Theme.Accent, pw) { StartCap = LineCap.Round, EndCap = LineCap.Round })
                             g.DrawArc(ap, ring, -90, sweep);
                     }
-                    float ins = pw * 1.9f;
-                    Theme.DrawDripper(g, new RectangleF(ins, ins * 1.02f, sz - 2 * ins, sz - 2 * ins), Color.White);
+                    float ins = big * (active ? 0.27f : 0.21f);
+                    Theme.DrawDripper(g, new RectangleF(ins, ins * 1.04f, big - 2 * ins, big - 2 * ins), Color.White);
+                }
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.Clear(Color.Transparent);
+                    g.DrawImage(hi, new Rectangle(0, 0, sz, sz));
                 }
                 IntPtr h = bmp.GetHicon();
                 using (var tmp = Icon.FromHandle(h))
                 {
                     var ico = (Icon)tmp.Clone();
-                    Native.DestroyIcon(h);
+                    try { Native.DestroyIcon(h); } catch { }
                     return ico;
                 }
             }

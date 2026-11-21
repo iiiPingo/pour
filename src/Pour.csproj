@@ -8,7 +8,7 @@
     <ApplicationIcon>pour.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>1.1.0</Version>
+    <Version>1.2.1</Version>
     <Product>Pour</Product>
     <Description>Pour - video and audio downloader</Description>
     <DebugType>none</DebugType>

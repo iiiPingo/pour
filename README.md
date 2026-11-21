@@ -13,7 +13,7 @@
 - Tray ring fills while downloading, flashes green when done.
 
 ## Install
-1. Download `Pour-1.1.zip` from [Releases](../../releases/latest) and unzip it into its own folder.
+1. Download `Pour-1.2.1.zip` from [Releases](../../releases/latest) and unzip it into its own folder.
 2. Run `Pour.exe`. If SmartScreen warns, click **More info > Run anyway** (the exe is unsigned).
 3. The first launch downloads yt-dlp and ffmpeg (about 150 MB, one time) into `%LOCALAPPDATA%\Pour\bin`.
 

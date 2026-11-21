@@ -19,7 +19,9 @@ namespace Pour
         readonly List<Hit> hits = new List<Hit>();
         readonly Timer anim;
         string hover;
-        int scroll;
+        // smooth scrolling in pixels: the wheel moves scrollGoal, scrollAnim eases scrollPx toward it (~60 fps)
+        float scrollPx, scrollGoal;
+        readonly Timer scrollAnim = new Timer { Interval = 15 };
         bool urlError;
         public bool SuppressHide;
         public DateTime LastHidden = DateTime.MinValue;
@@ -77,6 +79,8 @@ namespace Pour
                 var urls = Fmt.AnyUrls(t);
                 foreach (var u in urls) app.Dl.Add(u);
             };
+
+            scrollAnim.Tick += (o, e) => ScrollStep();
 
             anim = new Timer { Interval = 50 };
             anim.Tick += (o, e) => { if (Visible && app.Dl.Jobs.Any(j => j.State == JobState.Running && (j.Progress < 0 || j.Phase == "Finishing"))) Invalidate(); };
@@ -171,7 +175,7 @@ namespace Pour
             if (urls.Count == 0) { urlError = true; Invalidate(); url.Focus(); return; }
             foreach (var u in urls) app.Dl.Add(u);
             url.Clear();
-            scroll = 0;
+            ScrollTo(0);
         }
 
         void Paste()
@@ -275,7 +279,7 @@ namespace Pour
             {
                 var cr = new Rectangle(W - Pad - S(100), tr.Y, S(100), tr.Height);
                 TextRenderer.DrawText(g, "Clear finished", fSmall, cr, hover == "clear" ? Theme.Text : Theme.Sub, R);
-                AddHit(cr, "clear", () => { app.Dl.ClearFinished(); scroll = 0; });
+                AddHit(cr, "clear", () => { app.Dl.ClearFinished(); ScrollTo(0); });
             }
 
             using (var p = new Pen(Theme.Border, Math.Max(1, s))) g.DrawLine(p, Pad, S(176), W - Pad, S(176));
@@ -290,17 +294,29 @@ namespace Pour
             }
             else
             {
-                scroll = Math.Max(0, Math.Min(scroll, jobs.Count - MaxRows));
-                for (int i = 0; i < VisibleRows && i + scroll < jobs.Count; i++)
+                int maxPx = MaxScrollPx;
+                scrollPx = Math.Max(0, Math.Min(scrollPx, maxPx));
+                scrollGoal = Math.Max(0, Math.Min(scrollGoal, maxPx));
+                int off = (int)Math.Round(scrollPx);
+                var listRect = new Rectangle(0, ListTop, W, ListH);
+                var state = g.Save();
+                g.SetClip(listRect);
+                for (int i = Math.Max(0, off / RowH); i < jobs.Count; i++)
                 {
-                    var r = new Rectangle(Pad - S(6), ListTop + i * RowH + S(2), W - Pad * 2 + S(12), RowH - S(4));
-                    DrawRow(g, jobs[i + scroll], r);
+                    int y = ListTop + i * RowH - off;
+                    if (y > listRect.Bottom) break;
+                    var r = new Rectangle(Pad - S(6), y + S(2), W - Pad * 2 + S(12), RowH - S(4));
+                    int before = hits.Count;
+                    DrawRow(g, jobs[i], r);
+                    // a row half out of view only answers clicks on its visible part
+                    for (int k = before; k < hits.Count; k++) hits[k].R = Rectangle.Intersect(hits[k].R, listRect);
                 }
+                g.Restore(state);
                 if (jobs.Count > MaxRows)
                 {
                     int trackH = VisibleRows * RowH - S(8);
                     int thumbH = Math.Max(S(20), trackH * MaxRows / jobs.Count);
-                    int thumbY = ListTop + S(4) + (trackH - thumbH) * scroll / Math.Max(1, jobs.Count - MaxRows);
+                    int thumbY = ListTop + S(4) + (int)((long)(trackH - thumbH) * off / Math.Max(1, maxPx));
                     Theme.Fill(g, new Rectangle(W - S(5), thumbY, S(3), thumbH), Theme.Border, S(2));
                 }
             }
@@ -446,11 +462,25 @@ namespace Pour
             Invalidate();
         }
 
+        int MaxScrollPx => Math.Max(0, (app.Dl.Jobs.Count - MaxRows) * RowH);
+
+        void ScrollTo(int px) { scrollAnim.Stop(); scrollGoal = scrollPx = px; Invalidate(); }
+
+        void ScrollStep()
+        {
+            float d = scrollGoal - scrollPx;
+            if (Math.Abs(d) < 0.6f) { scrollPx = scrollGoal; scrollAnim.Stop(); }
+            else scrollPx += d * 0.3f;
+            Invalidate();
+            Update();
+        }
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
-            scroll -= Math.Sign(e.Delta);
-            Invalidate();
+            // the real delta: a touchpad scrolls by the pixel, a wheel notch by one row
+            scrollGoal = Math.Max(0, Math.Min(MaxScrollPx, scrollGoal - e.Delta * RowH / 120f));
+            if (!scrollAnim.Enabled) scrollAnim.Start();
         }
     }
 }
