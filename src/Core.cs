@@ -21,13 +21,15 @@ namespace Pour
     static class Theme
     {
         public static readonly Color Bg = Color.FromArgb(32, 32, 32);
-        public static readonly Color Card = Color.FromArgb(44, 44, 44);
-        public static readonly Color CardHover = Color.FromArgb(56, 56, 56);
+        public static readonly Color Card = Color.FromArgb(45, 45, 45);
+        public static readonly Color CardSoft = Color.FromArgb(39, 39, 39);
+        public static readonly Color Field = Color.FromArgb(52, 52, 52);
+        public static readonly Color CardHover = Color.FromArgb(58, 58, 58);
         public static readonly Color Selected = Color.FromArgb(72, 72, 72);
         public static readonly Color Border = Color.FromArgb(62, 62, 62);
         public static readonly Color Text = Color.FromArgb(242, 242, 242);
-        public static readonly Color Sub = Color.FromArgb(160, 160, 160);
-        public static readonly Color Dim = Color.FromArgb(112, 112, 112);
+        public static readonly Color Sub = Color.FromArgb(170, 170, 170);
+        public static readonly Color Dim = Color.FromArgb(120, 120, 120);
         public static readonly Color Accent = Color.FromArgb(208, 100, 74);
         public static readonly Color AccentHover = Color.FromArgb(226, 122, 95);
         public static readonly Color AccentText = Color.FromArgb(255, 248, 244);
@@ -38,6 +40,11 @@ namespace Pour
         public static readonly Color Track = Color.FromArgb(68, 68, 68);
 
         public static readonly string IconFont = FontExists("Segoe Fluent Icons") ? "Segoe Fluent Icons" : "Segoe MDL2 Assets";
+        static readonly string UiFamily = FontExists("Segoe UI Variable Text") ? "Segoe UI Variable Text" : "Segoe UI";
+
+        // Lexend (built into the exe, same as Minibar): Medium for normal text, Bold for names, headings and buttons
+        public static Font Ui(float size) => AppFonts.Make(AppFonts.Medium, size, false) ?? new Font(UiFamily, size);
+        public static Font UiBold(float size) => AppFonts.Make(AppFonts.Bold, size, true) ?? new Font(UiFamily, size, FontStyle.Bold);
 
         static bool FontExists(string name)
         {
@@ -110,6 +117,60 @@ namespace Pour
                 pts[i] = new PointF(cx + (float)(x * w * 0.62), top + (float)((y + 1) / 2 * h));
             }
             return pts;
+        }
+    }
+
+    // ---------------------------------------------------------------- Lexend, built into the exe
+    // One PrivateFontCollection per file (GDI+ Font objects) plus AddFontMemResourceEx (so TextRenderer and the
+    // link box find the same faces). The memory stays allocated for the life of the process. Lexend-Medium.ttf is
+    // family "Lexend Medium" (Regular style); Lexend-Bold.ttf is family "Lexend" with only a Bold face.
+    static class AppFonts
+    {
+        public static FontFamily Medium, Bold;
+        static readonly System.Drawing.Text.PrivateFontCollection[] pfc =
+            { new System.Drawing.Text.PrivateFontCollection(), new System.Drawing.Text.PrivateFontCollection() };
+
+        [DllImport("gdi32.dll")] static extern IntPtr AddFontMemResourceEx(IntPtr pb, uint cb, IntPtr pdv, ref uint pcFonts);
+
+        static AppFonts()
+        {
+            try
+            {
+                var names = new[] { "fonts.Lexend-Medium.ttf", "fonts.Lexend-Bold.ttf" };
+                for (int i = 0; i < names.Length; i++)
+                {
+                    byte[] data;
+                    using (var st = typeof(AppFonts).Assembly.GetManifestResourceStream(names[i]))
+                    {
+                        if (st == null) return;
+                        data = new byte[st.Length];
+                        int read = 0;
+                        while (read < data.Length) { int n = st.Read(data, read, data.Length - read); if (n <= 0) break; read += n; }
+                    }
+                    IntPtr mem = Marshal.AllocCoTaskMem(data.Length);   // never freed: GDI and GDI+ read from it
+                    Marshal.Copy(data, 0, mem, data.Length);
+                    pfc[i].AddMemoryFont(mem, data.Length);
+                    uint count = 0;
+                    if (AddFontMemResourceEx(mem, (uint)data.Length, IntPtr.Zero, ref count) == IntPtr.Zero) return;
+                }
+                if (pfc[0].Families.Length == 0 || pfc[1].Families.Length == 0) return;
+                Medium = pfc[0].Families[0];
+                Bold = pfc[1].Families[0];
+            }
+            catch { Medium = Bold = null; }
+        }
+
+        public static Font Make(FontFamily f, float size, bool bold)
+        {
+            if (f == null) return null;
+            try
+            {
+                var want = bold ? FontStyle.Bold : FontStyle.Regular;
+                var other = bold ? FontStyle.Regular : FontStyle.Bold;
+                var style = f.IsStyleAvailable(want) ? want : f.IsStyleAvailable(other) ? other : (FontStyle?)null;
+                return style == null ? null : new Font(f, size, style.Value);
+            }
+            catch { return null; }
         }
     }
 
@@ -209,6 +270,21 @@ namespace Pour
                 }
                 catch { }
             }
+        }
+
+        // the app was moved or renamed: point Start with Windows at this copy, only if the old path is gone
+        public static void RepairRunPath()
+        {
+            try
+            {
+                using (var k = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                {
+                    if (!(k?.GetValue("Pour") is string v) || v.Length == 0) return;
+                    string old = v[0] == '"' ? v.Substring(1, v.IndexOf('"', 1) - 1) : v.Split(' ')[0];
+                    if (!File.Exists(old)) k.SetValue("Pour", "\"" + Application.ExecutablePath + "\" --tray");
+                }
+            }
+            catch { }
         }
 
         public string FormatLabel(bool mp3, string quality) => mp3 ? "MP3" : "MP4 · " + QualityLabel(quality);
@@ -379,13 +455,16 @@ namespace Pour
 
         static readonly Regex UrlRx = new Regex(@"https?://[^\s""'<>]+", RegexOptions.IgnoreCase);
 
+        // a link pasted from a sentence often carries the sentence's punctuation
+        static string CleanUrl(string u) => u.TrimEnd('.', ',', ';', '!', '?');
+
         // strict: the text must be nothing but links (used for the clipboard watcher)
         public static List<string> OnlyUrls(string text)
         {
             var list = new List<string>();
             if (string.IsNullOrWhiteSpace(text) || text.Length > 8000) return list;
             if (UrlRx.Replace(text, "").Trim().Length > 0) return list;
-            foreach (Match m in UrlRx.Matches(text)) if (!list.Contains(m.Value)) list.Add(m.Value);
+            foreach (Match m in UrlRx.Matches(text)) { string u = CleanUrl(m.Value); if (!list.Contains(u)) list.Add(u); }
             return list;
         }
 
@@ -394,7 +473,7 @@ namespace Pour
         {
             var list = new List<string>();
             if (string.IsNullOrWhiteSpace(text)) return list;
-            foreach (Match m in UrlRx.Matches(text)) if (!list.Contains(m.Value)) list.Add(m.Value);
+            foreach (Match m in UrlRx.Matches(text)) { string u = CleanUrl(m.Value); if (!list.Contains(u)) list.Add(u); }
             if (list.Count == 0)
             {
                 string t = text.Trim();
@@ -425,6 +504,15 @@ namespace Pour
         public int Index, Count, FilesDone;
         public Process Proc;
         public bool CancelRequested, RemoveAfter;
+        public bool OpenWhenDone;        // "Pour & open" on one link
+        public int OpenGroup;            // "Pour & open" on several links: the folder opens once when all are finished
+
+        // a playlist result opens its folder; a single video or song opens itself
+        public bool OpensFolder => FilesDone > 1 || (Playlist && Count > 1);
+        public string ResultFolder
+        {
+            get { try { return string.IsNullOrEmpty(FilePath) ? null : Path.GetDirectoryName(FilePath); } catch { return null; } }
+        }
 
         public string DisplayTitle => !string.IsNullOrEmpty(Title) ? Title : Fmt.ShortUrl(Url);
         public bool Active => State == JobState.Queued || State == JobState.Running;
@@ -450,13 +538,42 @@ namespace Pour
 
         public bool HasActive(string url) => Jobs.Any(j => j.Active && j.Url == url);
 
-        public Job Add(string url)
+        public Job Add(string url, bool openWhenDone = false, int openGroup = 0)
         {
-            if (HasActive(url)) return null;
-            var j = new Job { Url = url, Mp3 = s.Mp3, Quality = s.Quality, Playlist = s.Playlist };
+            var running = Jobs.FirstOrDefault(x => x.Active && x.Url == url);
+            if (running != null)
+            {
+                // already pouring: "Pour & open" still applies to it
+                if (openWhenDone || openGroup > 0) { running.OpenWhenDone = openWhenDone; running.OpenGroup = openGroup; Raise(); }
+                return null;
+            }
+            var j = new Job { Url = url, Mp3 = s.Mp3, Quality = s.Quality, Playlist = s.Playlist, OpenWhenDone = openWhenDone, OpenGroup = openGroup };
             Jobs.Insert(0, j);
             Pump();
             return j;
+        }
+
+        int lastGroup;
+
+        // one link opens when done; several links open the download folder once, after the last one
+        public void AddAndOpen(IList<string> urls)
+        {
+            if (urls.Count == 1) { Add(urls[0], true); return; }
+            int group = ++lastGroup;
+            foreach (var u in urls) Add(u, false, group);
+        }
+
+        // returns true when a "Pour & open" batch just finished with at least one file
+        public bool SettleOpenGroups()
+        {
+            bool open = false;
+            foreach (var g in Jobs.Where(x => x.OpenGroup > 0).GroupBy(x => x.OpenGroup).ToList())
+            {
+                if (g.Any(x => x.Active)) continue;
+                if (g.Any(x => x.State == JobState.Done)) open = true;
+                foreach (var x in g) x.OpenGroup = 0;
+            }
+            return open;
         }
 
         public void Pump()
@@ -477,7 +594,8 @@ namespace Pour
             if (j.State == JobState.Queued) { j.State = JobState.Canceled; Raise(); return; }
             if (j.State != JobState.Running) return;
             j.CancelRequested = true;
-            KillTree(j.Proc);
+            var proc = j.Proc;
+            Task.Run(() => KillTree(proc));     // taskkill can take seconds: never on the UI thread
             Raise();
         }
 
@@ -512,8 +630,8 @@ namespace Pour
             try
             {
                 if (p == null || p.HasExited) return;
-                var k = Process.Start(new ProcessStartInfo("taskkill", "/PID " + p.Id + " /T /F") { CreateNoWindow = true, UseShellExecute = false });
-                k?.WaitForExit(3000);
+                using (var k = Process.Start(new ProcessStartInfo("taskkill", "/PID " + p.Id + " /T /F") { CreateNoWindow = true, UseShellExecute = false }))
+                    k?.WaitForExit(3000);
             }
             catch { }
         }
@@ -584,6 +702,7 @@ namespace Pour
         void Start(Job j)
         {
             j.State = JobState.Running; j.Progress = -1; j.Phase = "Starting"; j.Error = null; j.FilesDone = 0;
+            j.FilePath = null; j.Index = j.Count = 0; j.Total = double.NaN;     // a retry must not reuse the last run's file
             try
             {
                 Directory.CreateDirectory(s.Folder);
@@ -609,7 +728,7 @@ namespace Pour
                     try { p.WaitForExit(); } catch { }
                     int code = -1;
                     try { code = p.ExitCode; } catch { }
-                    Post(() => OnExit(j, code));
+                    Post(() => { OnExit(j, code); try { p.Dispose(); } catch { } });
                 });
             }
             catch (Exception ex)

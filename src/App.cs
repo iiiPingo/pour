@@ -20,7 +20,9 @@ namespace Pour
                 bool exit = args.Contains("--exit");
                 if (!created)
                 {
-                    Native.PostMessage((IntPtr)0xffff, exit ? Native.WM_EXITPOUR : Native.WM_SHOWPOUR, IntPtr.Zero, IntPtr.Zero);
+                    // --tray (Start with Windows) must never pop the panel open on a Pour that's already running
+                    if (exit || !args.Contains("--tray"))
+                        Native.PostMessage((IntPtr)0xffff, exit ? Native.WM_EXITPOUR : Native.WM_SHOWPOUR, IntPtr.Zero, IntPtr.Zero);
                     return;
                 }
                 if (exit) return;   // asked to close, but Pour wasn't running
@@ -90,28 +92,40 @@ namespace Pour
         public readonly PourPanel Panel;
         public string Status = "";
         public bool StatusIsError;
+        public string UpdateNote = "";
 
         readonly NotifyIcon tray;
         readonly ContextMenuStrip menu;
         readonly MsgWindow msg;
         readonly System.Windows.Forms.Timer tick;
         Action balloonAction;
+        DateTime balloonShown = DateTime.MinValue;
         string lastClip;
         DateTime ignoreClipUntil = DateTime.MinValue;
         DateTime flashUntil = DateTime.MinValue;
         bool flashError;
         string lastIconKey;
 
+        // test harness only: the panel with no tray, hotkey, clipboard or setup
+        internal App(Settings settings, Downloader unused)
+        {
+            S = settings;
+            AppIcon = SystemIcons.Application;
+            Dl = new Downloader(S);
+            Panel = new PourPanel(this);
+        }
+
         public App(bool startHidden)
         {
             S = Settings.Load();
             if (S.FirstRun) { Settings.StartWithWindows = true; S.Save(); }
+            else Settings.RepairRunPath();
 
             try { AppIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { AppIcon = SystemIcons.Application; }
 
             Dl = new Downloader(S);
             Panel = new PourPanel(this);
-            menu = new ContextMenuStrip { Renderer = new DarkRenderer(), Font = new Font("Segoe UI", 9f), ShowImageMargin = true };
+            menu = new ContextMenuStrip { Renderer = new DarkRenderer(), Font = Theme.Ui(9.5f), ShowImageMargin = false };
             menu.Opening += (o, e) => { BuildMenu(); e.Cancel = false; };
             menu.Closed += (o, e) => ReleasePanel();
 
@@ -119,11 +133,17 @@ namespace Pour
             tray.Icon = TrayArt.Render(-1, false, false);
             tray.MouseClick += (o, e) => { if (e.Button == MouseButtons.Left) TogglePanel(); };
             tray.BalloonTipClicked += (o, e) => { var a = balloonAction; balloonAction = null; a?.Invoke(); };
-            tray.BalloonTipClosed += (o, e) => balloonAction = null;
+            // replacing a notification closes the old one: that must not wipe the new one's click
+            tray.BalloonTipClosed += (o, e) => { if ((DateTime.Now - balloonShown).TotalMilliseconds > 1000) balloonAction = null; };
 
             msg = new MsgWindow(this);
 
-            Dl.Changed += () => { if (Panel.Visible) { Panel.Relayout(); Panel.Invalidate(); } UpdateTray(); };
+            Dl.Changed += () =>
+            {
+                if (Dl.SettleOpenGroups()) OpenFolder();
+                if (Panel.Visible) { Panel.Relayout(); Panel.Invalidate(); }
+                UpdateTray();
+            };
             Dl.Finished += OnFinished;
 
             tick = new System.Windows.Forms.Timer { Interval = 400 };
@@ -203,13 +223,16 @@ namespace Pour
         void Balloon(string title, string text, ToolTipIcon icon, Action click)
         {
             balloonAction = click;
-            tray.ShowBalloonTip(5000, title, text, icon);
+            balloonShown = DateTime.Now;
+            try { tray.ShowBalloonTip(5000, title, string.IsNullOrEmpty(text) ? "Pour" : text, icon); } catch (Exception ex) { Log.Crash(ex); }
         }
 
         void OnFinished(Job j)
         {
             if (!Dl.Jobs.Any(x => x.State == JobState.Running)) { flashUntil = DateTime.Now.AddSeconds(4); flashError = j.State == JobState.Failed; }
             UpdateTray();
+            if (j.State == JobState.Done && j.OpenWhenDone) { j.OpenWhenDone = false; OpenResult(j); return; }
+            if (j.State == JobState.Done && j.OpenGroup > 0) return;    // the folder opens when the whole batch is done
             if (Panel.Visible) return;
             if (j.State == JobState.Done) Balloon("Poured", j.DisplayTitle, ToolTipIcon.None, () => ShowInFolder(j));
             else if (j.State == JobState.Failed) Balloon("Couldn't pour that", j.Error ?? j.DisplayTitle, ToolTipIcon.Warning, ShowPanel);
@@ -229,13 +252,13 @@ namespace Pour
         public void OnClipboard()
         {
             if (DateTime.Now < ignoreClipUntil) return;
+            if (!Panel.Visible && !S.WatchClipboard) return;    // watching is off: don't even read the clipboard
             var urls = Fmt.OnlyUrls(ReadClipboard());
             if (urls.Count == 0) return;
             string first = urls[0];
             if (first == lastClip) return;
             lastClip = first;
             if (Panel.Visible) { Panel.SetUrl(string.Join(" ", urls)); return; }
-            if (!S.WatchClipboard) return;
             if (urls.All(Dl.HasActive)) return;
             string what = urls.Count == 1 ? "Click to pour it" : "Click to pour all " + urls.Count;
             Balloon("Link copied", what + " as " + S.FormatLabel(S.Mp3, S.Quality) + ".", ToolTipIcon.None, () =>
@@ -263,7 +286,14 @@ namespace Pour
         {
             try
             {
-                if (j.FilesDone > 1 || j.FilePath == null || !File.Exists(j.FilePath)) { ShowInFolder(j); return; }
+                if (j.OpensFolder)
+                {
+                    string dir = j.ResultFolder;
+                    if (dir != null && Directory.Exists(dir)) Process.Start("explorer.exe", "\"" + dir + "\"")?.Dispose();
+                    else OpenFolder();
+                    return;
+                }
+                if (j.FilePath == null || !File.Exists(j.FilePath)) { ShowInFolder(j); return; }
                 Process.Start(new ProcessStartInfo(j.FilePath) { UseShellExecute = true });
             }
             catch { ShowInFolder(j); }
@@ -279,34 +309,40 @@ namespace Pour
             catch { }
         }
 
-        void ChangeFolder()
+        public void ChangeFolder()
         {
             using (var d = new FolderBrowserDialog { Description = "Where should Pour save downloads?", SelectedPath = S.Folder, ShowNewFolderButton = true })
             {
                 Panel.SuppressHide = true;
-                if (d.ShowDialog() == DialogResult.OK) { S.Folder = d.SelectedPath; S.Save(); }
+                var result = Panel.Visible ? d.ShowDialog(Panel) : d.ShowDialog();
+                if (result == DialogResult.OK) { S.Folder = d.SelectedPath; S.Save(); }
                 Panel.SuppressHide = false;
                 if (Panel.Visible) { Panel.Activate(); Panel.Invalidate(); }
             }
         }
 
-        async void UpdateNow()
+        void Say(string text)
         {
-            if (!File.Exists(Tools.YtDlp)) return;
-            if (Dl.Jobs.Any(j => j.State == JobState.Running))
-            {
-                Balloon("Pour", "Wait for current downloads to finish, then update.", ToolTipIcon.None, null);
-                return;
-            }
+            UpdateNote = text;
+            if (Panel.Visible) Panel.Invalidate();
+            else Balloon("Pour", text, ToolTipIcon.None, null);
+        }
+
+        public async void UpdateNow()
+        {
+            // also covers first-time setup and an update that's already running
+            if (!Dl.ToolsReady || !File.Exists(Tools.YtDlp)) { Say("Busy, try again in a moment"); return; }
+            if (Dl.Jobs.Any(j => j.State == JobState.Running)) { Say("Wait for downloads to finish"); return; }
             bool wasReady = Dl.ToolsReady;
             Dl.ToolsReady = false;
+            UpdateNote = "Updating…";
             SetStatus("Updating yt-dlp…");
             string r = await Tools.UpdateYtDlpAsync();
             S.LastUpdate = DateTime.Now; S.Save();
             SetStatus("");
             Dl.ToolsReady = wasReady || Tools.Ready;
             Dl.Pump();
-            Balloon("Pour", r, ToolTipIcon.None, null);
+            Say(r);
         }
 
         // clean exit on request: after this message is handled, not inside it
@@ -326,12 +362,6 @@ namespace Pour
         }
 
         // ------------------------------------------------------------ menus
-        public void ShowMenu(Form owner, Point screen)
-        {
-            Panel.SuppressHide = true;
-            menu.Show(screen);
-        }
-
         void ReleasePanel()
         {
             if (!Panel.IsHandleCreated) { Panel.SuppressHide = false; return; }
@@ -342,6 +372,8 @@ namespace Pour
             }));
         }
 
+        readonly Font menuBold = Theme.UiBold(9.5f);
+
         ToolStripMenuItem Item(string text, Action click, bool check = false, bool isChecked = false)
         {
             var it = new ToolStripMenuItem(text) { ForeColor = Theme.Text, CheckOnClick = false, Checked = check && isChecked };
@@ -351,28 +383,13 @@ namespace Pour
 
         void BuildMenu()
         {
+            foreach (ToolStripItem old in menu.Items.Cast<ToolStripItem>().ToList()) old.Dispose();
             menu.Items.Clear();
             var open = Item("Open Pour", ShowPanel);
-            open.Font = new Font(menu.Font, FontStyle.Bold);
+            open.Font = menuBold;
             menu.Items.Add(open);
             menu.Items.Add(Item("Open download folder", OpenFolder));
-            menu.Items.Add(Item("Change download folder…", ChangeFolder));
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(Item("Watch clipboard for links", () => { S.WatchClipboard = !S.WatchClipboard; S.Save(); }, true, S.WatchClipboard));
-            menu.Items.Add(Item("Embed cover art and info", () => { S.EmbedExtras = !S.EmbedExtras; S.Save(); Panel.Invalidate(); }, true, S.EmbedExtras));
-            menu.Items.Add(Item("Start with Windows", () => { Settings.StartWithWindows = !Settings.StartWithWindows; }, true, Settings.StartWithWindows));
-            var par = Item("Downloads at once", null);
-            for (int i = 1; i <= 4; i++)
-            {
-                int n = i;
-                par.DropDownItems.Add(Item(n.ToString(), () => { S.Parallel = n; S.Save(); Dl.Pump(); }, true, S.Parallel == n));
-            }
-            par.DropDown.BackColor = Color.FromArgb(40, 40, 40);
-            ((ToolStripDropDownMenu)par.DropDown).Renderer = menu.Renderer;
-            menu.Items.Add(par);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(Item("Update yt-dlp now", UpdateNow));
-            menu.Items.Add(Item("Keep yt-dlp updated", () => { S.AutoUpdate = !S.AutoUpdate; S.Save(); }, true, S.AutoUpdate));
+            menu.Items.Add(Item("Settings", () => { ShowPanel(); Panel.ShowSettings(); }));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(Item("Exit", Exit));
         }
@@ -393,7 +410,7 @@ namespace Pour
                 m.Items.Add(Item("Remove from list", () => Dl.Remove(j)));
             }
             Panel.SuppressHide = true;
-            m.Closed += (o, e) => ReleasePanel();
+            m.Closed += (o, e) => { ReleasePanel(); Panel.BeginInvoke((Action)m.Dispose); };
             m.Show(screen);
         }
     }

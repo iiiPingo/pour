@@ -3,6 +3,19 @@
 <p align="center">A video and audio downloader that lives in the Windows tray. Powered by yt-dlp and ffmpeg.</p>
 <p align="center"><a href="../../releases/latest"><b>Download the latest release</b></a></p>
 
+## New in 1.3
+
+- New look: Lexend, the same font as Minibar, with sharper text.
+- New Settings box (gear icon) with clear switches, replacing the old menu.
+- New "Pour & open" button (or Ctrl+Enter): the video or song opens by itself when it finishes. A playlist opens its folder. Several links open the download folder once, after the last one.
+- Fixed: notification clicks that sometimes did nothing.
+- Fixed: Cancel could freeze the window for a few seconds.
+- Fixed: Retry could open the previous file or show old playlist numbers.
+- Fixed: clicks left over from a closed menu could press a button.
+- Fixed: links copied with a comma or dot at the end failed.
+- Fixed: Start with Windows stopped working after moving Pour to another folder.
+- Fixed: with clipboard watching off, Pour no longer reads the clipboard while closed.
+
 ## Features
 - **MP4 or MP3**, in Best / 2K / 1080p / 720p.
 - **Copy a link anywhere** and click the notification to download it, or press **Ctrl+Alt+D**.
