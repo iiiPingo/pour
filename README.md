@@ -48,4 +48,4 @@ On Linux it builds against Mono's .NET Framework 4.8 reference assemblies (`mono
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org) do the heavy lifting; they are downloaded at runtime, not bundled.
 
 ## License
-MIT
+PolyForm Noncommercial License 1.0.0: free to use, copy and change for non-commercial purposes, not for selling or other commercial use. See `LICENSE`.
