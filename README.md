@@ -3,6 +3,11 @@
 <p align="center">A video and audio downloader that lives in the Windows tray. Powered by yt-dlp and ffmpeg.</p>
 <p align="center"><a href="../../releases/latest"><b>Download the latest release</b></a></p>
 
+## New in 1.4
+
+- New GIF option next to MP4 and MP3. Pick From and To times, up to 60 seconds, and Pour saves just that part as a GIF.
+- Works with Pour & open, so the GIF can open as soon as it is ready.
+
 ## New in 1.3
 
 - New look: Lexend, the same font as Minibar, with sharper text.
@@ -17,7 +22,7 @@
 - Fixed: with clipboard watching off, Pour no longer reads the clipboard while closed.
 
 ## Features
-- **MP4 or MP3**, in Best / 2K / 1080p / 720p.
+- **MP4 or MP3**, in Best / 2K / 1080p / 720p, or a **GIF** of any part up to 60 seconds.
 - **Copy a link anywhere** and click the notification to download it, or press **Ctrl+Alt+D**.
 - Paste several links at once, or drag them from the browser onto the panel.
 - **Queue** with 1 to 4 downloads at once, cancel / retry / open / show in folder.
@@ -26,7 +31,7 @@
 - Tray ring fills while downloading, flashes green when done.
 
 ## Install
-1. Download `Pour-1.2.1.zip` from [Releases](../../releases/latest) and unzip it into its own folder.
+1. Download `Pour-1.4.0.zip` from [Releases](../../releases/latest) and unzip it into its own folder.
 2. Run `Pour.exe`. If SmartScreen warns, click **More info > Run anyway** (the exe is unsigned).
 3. The first launch downloads yt-dlp and ffmpeg (about 150 MB, one time) into `%LOCALAPPDATA%\Pour\bin`.
 

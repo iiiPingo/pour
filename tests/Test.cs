@@ -57,6 +57,43 @@ namespace Pour
             d.AddAndOpen(new[] { "https://a.com/1", "https://a.com/2" });
             foreach (var x in d.Jobs) x.State = JobState.Failed;
             Check("all failed opens nothing", !d.SettleOpenGroups());
+
+            Check("time in seconds", Fmt.Seconds("83") == 83);
+            Check("time m:ss", Fmt.Seconds("1:23") == 83);
+            Check("time h:mm:ss", Fmt.Seconds("1:02:03") == 3723);
+            Check("bad times refused", Fmt.Seconds("") < 0 && Fmt.Seconds("abc") < 0 && Fmt.Seconds("1:75") < 0 && Fmt.Seconds("1:2:3:4") < 0 && Fmt.Seconds("-5") < 0);
+            Check("clock text", Fmt.Clock(83) == "1:23" && Fmt.Clock(3723) == "1:02:03");
+            Check("GIF range ok", Fmt.GifRange("1:00", "1:10", out int ga, out int gb) && ga == 60 && gb == 70);
+            Check("GIF To must be after From", !Fmt.GifRange("0:10", "0:10", out _, out _));
+            Check("GIF limit is 60 seconds", Fmt.GifRange("0:00", "1:00", out _, out _) && !Fmt.GifRange("0:00", "1:01", out _, out _));
+
+            var gs = new Settings { Gif = true, Mp3 = true, Playlist = true, GifFrom = "0:05", GifTo = "0:12" };
+            d = new Downloader(gs);
+            var g = d.Add("https://a.com/gif");
+            Check("GIF job is one video, not MP3", g.Gif && !g.Mp3 && !g.Playlist);
+            Check("GIF job keeps the range", g.ClipFrom == 5 && g.ClipTo == 12);
+            gs.GifTo = "9:00";
+            var g2 = d.Add("https://a.com/gif2");
+            Check("bad range from clipboard uses first 10 seconds", g2.ClipFrom == 0 && g2.ClipTo == 10);
+
+            g.TempDir = @"C:\t\x";
+            var ga2 = Downloader.BuildArgs(g, gs, "ff");
+            Check("GIF cuts only the chosen part", ga2.Contains("*5-12") && ga2.Contains("--force-keyframes-at-cuts"));
+            Check("GIF works in its temp folder", ga2[ga2.IndexOf("-P") + 1] == @"C:\t\x");
+            Check("GIF skips cover art", !ga2.Contains("--embed-thumbnail"));
+            var mp4 = Downloader.BuildArgs(new Job { Url = "https://a.com/v", Quality = "1080" }, new Settings(), "ff");
+            Check("normal MP4 is not cut", !mp4.Contains("--download-sections"));
+
+
+            string tmp = Path.Combine(Path.GetTempPath(), "PourTest-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tmp);
+            try
+            {
+                Check("GIF name", Path.GetFileName(Downloader.FreeGifPath(tmp, "Clip")) == "Clip.gif");
+                File.WriteAllText(Path.Combine(tmp, "Clip.gif"), "x");
+                Check("GIF never overwrites", Path.GetFileName(Downloader.FreeGifPath(tmp, "Clip")) == "Clip (2).gif");
+            }
+            finally { Directory.Delete(tmp, true); }
         }
 
         static void Save(PourPanel p, string file, bool settings)
@@ -79,7 +116,11 @@ namespace Pour
             js.Add(new Job { Url = "https://a.com/2", Title = "أغنية طويلة جدا بعنوان عربي لاختبار عرض النص في القائمة", State = JobState.Done, Mp3 = true, FilesDone = 1, Quality = "best" });
             js.Add(new Job { Url = "https://a.com/3", Title = "Late night lo-fi mix", State = JobState.Done, Playlist = true, Count = 24, FilesDone = 24, Quality = "720" });
             js.Add(new Job { Url = "https://a.com/4", Title = "Private video", State = JobState.Failed, Error = "This video is private", Quality = "1080" });
+            js.Insert(0, new Job { Url = "https://a.com/5", Title = "Cat jumps off a shelf", State = JobState.Running, Progress = -1, Phase = "Finishing", Gif = true, ClipFrom = 12, ClipTo = 20, Quality = "1080" });
             Save(p, Path.Combine(dir, "main-list.png"), false);
+            st.Gif = true;
+            p.Relayout();
+            Save(p, Path.Combine(dir, "main-gif.png"), false);
         }
     }
 }

@@ -197,6 +197,8 @@ namespace Pour
     {
         public string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Pour");
         public bool Mp3 = false;
+        public bool Gif = false;          // never on together with Mp3
+        public string GifFrom = "0:00", GifTo = "0:10";
         public string Quality = "1080";   // best | 1440 | 1080 | 720
         public bool Playlist = false;
         public bool WatchClipboard = true;
@@ -224,6 +226,9 @@ namespace Pour
                     {
                         case "folder": if (v.Length > 0) s.Folder = v; break;
                         case "mp3": s.Mp3 = v == "1"; break;
+                        case "gif": s.Gif = v == "1"; break;
+                        case "giffrom": if (Fmt.Seconds(v) >= 0) s.GifFrom = v; break;
+                        case "gifto": if (Fmt.Seconds(v) >= 0) s.GifTo = v; break;
                         case "quality": if (new[] { "best", "1440", "1080", "720" }.Contains(v)) s.Quality = v; break;
                         case "playlist": s.Playlist = v == "1"; break;
                         case "clipboard": s.WatchClipboard = v == "1"; break;
@@ -247,7 +252,8 @@ namespace Pour
                 {
                     "folder=" + Folder, "mp3=" + B(Mp3), "quality=" + Quality, "playlist=" + B(Playlist),
                     "clipboard=" + B(WatchClipboard), "extras=" + B(EmbedExtras), "autoupdate=" + B(AutoUpdate),
-                    "parallel=" + Parallel, "lastupdate=" + LastUpdate.Ticks
+                    "parallel=" + Parallel, "lastupdate=" + LastUpdate.Ticks,
+                    "gif=" + B(Gif), "giffrom=" + GifFrom, "gifto=" + GifTo
                 }), Encoding.UTF8);
             }
             catch { }
@@ -287,7 +293,7 @@ namespace Pour
             catch { }
         }
 
-        public string FormatLabel(bool mp3, string quality) => mp3 ? "MP3" : "MP4 · " + QualityLabel(quality);
+        public string FormatLabel(bool mp3, string quality) => Gif ? "GIF" : mp3 ? "MP3" : "MP4 · " + QualityLabel(quality);
         public static string QualityLabel(string q) => q == "best" ? "Best" : q == "1440" ? "2K" : q + "p";
     }
 
@@ -453,6 +459,37 @@ namespace Pour
             catch { return url; }
         }
 
+        public const int MaxGifSeconds = 60;
+
+        // "83", "1:23" or "1:02:03" in seconds; -1 when it isn't a time
+        public static int Seconds(string text)
+        {
+            var p = (text ?? "").Trim().Split(':');
+            if (p.Length > 3) return -1;
+            long total = 0;
+            for (int i = 0; i < p.Length; i++)
+            {
+                if (p[i].Length == 0 || p[i].Length > 6 || !p[i].All(c => c >= '0' && c <= '9')) return -1;
+                int n = int.Parse(p[i], CultureInfo.InvariantCulture);
+                if (i > 0 && n > 59) return -1;
+                total = total * 60 + n;
+            }
+            return total > int.MaxValue ? -1 : (int)total;
+        }
+
+        public static string Clock(int sec)
+        {
+            var t = TimeSpan.FromSeconds(sec);
+            return (t.TotalHours >= 1 ? ((int)t.TotalHours) + ":" + t.Minutes.ToString("00") : t.Minutes.ToString()) + ":" + t.Seconds.ToString("00");
+        }
+
+        // a usable GIF range: To after From, and no longer than the limit
+        public static bool GifRange(string from, string to, out int a, out int b)
+        {
+            a = Seconds(from); b = Seconds(to);
+            return a >= 0 && b > a && b - a <= MaxGifSeconds;
+        }
+
         static readonly Regex UrlRx = new Regex(@"https?://[^\s""'<>]+", RegexOptions.IgnoreCase);
 
         // a link pasted from a sentence often carries the sentence's punctuation
@@ -492,6 +529,9 @@ namespace Pour
         public readonly int Id = nextId++;
         public string Url;
         public bool Mp3;
+        public bool Gif;
+        public int ClipFrom, ClipTo;     // GIF range in seconds
+        public string TempDir;           // GIF only: the clip is cut here, so it can't collide with a real download
         public string Quality;
         public bool Playlist;
         public string Title;
@@ -547,7 +587,13 @@ namespace Pour
                 if (openWhenDone || openGroup > 0) { running.OpenWhenDone = openWhenDone; running.OpenGroup = openGroup; Raise(); }
                 return null;
             }
-            var j = new Job { Url = url, Mp3 = s.Mp3, Quality = s.Quality, Playlist = s.Playlist, OpenWhenDone = openWhenDone, OpenGroup = openGroup };
+            var j = new Job { Url = url, Mp3 = s.Mp3 && !s.Gif, Gif = s.Gif, Quality = s.Quality, Playlist = s.Playlist && !s.Gif, OpenWhenDone = openWhenDone, OpenGroup = openGroup };
+            if (j.Gif)
+            {
+                // links from the clipboard or a drop skip the panel's check, so a bad range falls back to the first 10 seconds
+                if (!Fmt.GifRange(s.GifFrom, s.GifTo, out int from, out int to)) { from = 0; to = 10; }
+                j.ClipFrom = from; j.ClipTo = to;
+            }
             Jobs.Insert(0, j);
             Pump();
             return j;
@@ -659,7 +705,7 @@ namespace Pour
             {
                 "--newline", "--no-colors", "--progress", "--no-simulate", "--encoding", "utf-8",
                 "--ffmpeg-location", ffmpegDir,
-                "-P", s.Folder,
+                "-P", j.Gif ? j.TempDir : s.Folder,
                 "--concurrent-fragments", "8",
                 "--retries", "10", "--fragment-retries", "10",
                 "--no-mtime",
@@ -669,7 +715,13 @@ namespace Pour
                 "--print", "after_move:[file]%(filepath)s",
             };
 
-            if (j.Mp3)
+            if (j.Gif)
+            {
+                // only the chosen part, video only, small enough to convert quickly
+                a.AddRange(new[] { "-f", "bv*/b", "-S", "res:720,fps,vcodec:h264", "--remux-video", "mp4",
+                    "--download-sections", "*" + j.ClipFrom + "-" + j.ClipTo, "--force-keyframes-at-cuts" });
+            }
+            else if (j.Mp3)
             {
                 a.AddRange(new[] { "-f", "ba/b", "-x", "--audio-format", "mp3", "--audio-quality", "0" });
             }
@@ -679,7 +731,7 @@ namespace Pour
                 a.AddRange(new[] { "-f", "bv*+ba/b", "-S", res + ",fps,vcodec:h264,acodec:aac", "--merge-output-format", "mp4", "--remux-video", "mp4" });
             }
 
-            if (s.EmbedExtras)
+            if (s.EmbedExtras && !j.Gif)
             {
                 a.AddRange(new[] { "--embed-metadata", "--embed-thumbnail" });
                 if (!j.Mp3) a.Add("--embed-chapters");
@@ -706,6 +758,11 @@ namespace Pour
             try
             {
                 Directory.CreateDirectory(s.Folder);
+                if (j.Gif)
+                {
+                    j.TempDir = Path.Combine(Path.GetTempPath(), "Pour-gif-" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(j.TempDir);
+                }
                 string args = string.Join(" ", BuildArgs(j, s, Tools.FfmpegDir).Select(Q));
                 var psi = new ProcessStartInfo(Tools.YtDlp, args)
                 {
@@ -734,8 +791,88 @@ namespace Pour
             catch (Exception ex)
             {
                 j.State = JobState.Failed; j.Error = ex.Message;
+                CleanTemp(j);
                 Finished?.Invoke(j);
             }
+        }
+
+        public const string GifFilter = "fps=15,scale='min(480,iw)':-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle";
+
+        // never overwrites: "Name.gif", then "Name (2).gif"
+        public static string FreeGifPath(string folder, string name)
+        {
+            string path = Path.Combine(folder, name + ".gif");
+            for (int i = 2; File.Exists(path); i++) path = Path.Combine(folder, name + " (" + i + ").gif");
+            return path;
+        }
+
+        void StartGif(Job j)
+        {
+            j.Progress = -1; j.Phase = "Finishing"; j.Speed = j.Eta = double.NaN; j.Total = double.NaN;
+            Raise();
+            string clip = j.FilePath, made = Path.Combine(j.TempDir, "made.gif"), lastError = null;
+            try
+            {
+                var args = new[] { "-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-i", clip, "-vf", GifFilter, "-loop", "0", "-f", "gif", made };
+                var psi = new ProcessStartInfo(Path.Combine(Tools.FfmpegDir, "ffmpeg.exe"), string.Join(" ", args.Select(Q)))
+                {
+                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = j.TempDir
+                };
+                var p = new Process { StartInfo = psi };
+                p.ErrorDataReceived += (o, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) lastError = e.Data; };
+                p.Start();
+                j.Proc = p;
+                p.BeginErrorReadLine();
+                Task.Run(() =>
+                {
+                    try { p.WaitForExit(); } catch { }
+                    int code = -1;
+                    try { code = p.ExitCode; } catch { }
+                    Post(() => { OnGifExit(j, code, clip, made, lastError); try { p.Dispose(); } catch { } });
+                });
+            }
+            catch (Exception ex)
+            {
+                j.Error = "Couldn't make the GIF: " + ex.Message;
+                j.FilePath = null;
+                Finish(j, 1);
+            }
+        }
+
+        void OnGifExit(Job j, int code, string clip, string made, string lastError)
+        {
+            j.Proc = null;
+            j.FilePath = null;
+            if (!j.CancelRequested)
+            {
+                if (code == 0 && File.Exists(made))
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(s.Folder);
+                        string dest = FreeGifPath(s.Folder, Path.GetFileNameWithoutExtension(clip));
+                        File.Move(made, dest);
+                        j.FilePath = dest;
+                    }
+                    catch (Exception ex) { j.Error = "Couldn't save the GIF: " + ex.Message; code = 1; }
+                }
+                else
+                {
+                    j.Error = "Couldn't make the GIF" + (string.IsNullOrEmpty(lastError) ? "" : ": " + lastError);
+                    if (code == 0) code = 1;
+                }
+            }
+            Finish(j, code);
+        }
+
+        // only ever removes the folder this job created
+        static void CleanTemp(Job j)
+        {
+            string dir = j.TempDir;
+            j.TempDir = null;
+            if (dir == null) return;
+            try { Directory.Delete(dir, true); } catch { }
         }
 
         void OnOut(Job j, string line)
@@ -786,6 +923,18 @@ namespace Pour
         void OnExit(Job j, int code)
         {
             j.Proc = null;
+            if (j.Gif && code == 0 && !j.CancelRequested)
+            {
+                if (!string.IsNullOrEmpty(j.FilePath) && File.Exists(j.FilePath)) { StartGif(j); return; }
+                j.Error = "Couldn't get that part of the video";
+                code = 1;
+            }
+            Finish(j, code);
+        }
+
+        void Finish(Job j, int code)
+        {
+            CleanTemp(j);
             if (j.CancelRequested) j.State = JobState.Canceled;
             else if (code == 0 || (j.Playlist && j.FilesDone > 0)) { j.State = JobState.Done; j.Progress = 1; }
             else

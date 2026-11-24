@@ -18,7 +18,8 @@ namespace Pour
 
         readonly App app;
         readonly float s;
-        readonly TextBox url;
+        readonly TextBox url, clipFrom, clipTo;
+        bool clipError;
         readonly Font fTitle, fBody, fBold, fSmall, fLabel, fIcon, fIconSmall;
         readonly List<Hit> hits = new List<Hit>();
         readonly Timer anim;
@@ -83,6 +84,9 @@ namespace Pour
             url.HandleCreated += (o, e) => Native.SendMessage(url.Handle, 0x1501, (IntPtr)1, "Paste a link, or a few");
             Controls.Add(url);
 
+            clipFrom = ClipBox(app.S.GifFrom, t => app.S.GifFrom = t);
+            clipTo = ClipBox(app.S.GifTo, t => app.S.GifTo = t);
+
             DragEnter += (o, e) => { e.Effect = e.Data.GetDataPresent(DataFormats.UnicodeText) || e.Data.GetDataPresent(DataFormats.Text) ? DragDropEffects.Copy : DragDropEffects.None; };
             DragDrop += (o, e) =>
             {
@@ -97,6 +101,42 @@ namespace Pour
             anim.Start();
 
             Relayout();
+        }
+
+        TextBox ClipBox(string value, Action<string> store)
+        {
+            var b = new TextBox { BorderStyle = BorderStyle.None, BackColor = Theme.Card, ForeColor = Theme.Text, Font = fBody, Text = value, MaxLength = 8, Visible = false, TextAlign = HorizontalAlignment.Center };
+            b.KeyDown += (o, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Submit(e.Control); } };
+            b.TextChanged += (o, e) =>
+            {
+                string t = b.Text.Trim();
+                if (Fmt.Seconds(t) >= 0) store(t);
+                if (clipError) { clipError = false; Invalidate(); }
+            };
+            b.GotFocus += (o, e) => b.SelectAll();
+            b.LostFocus += (o, e) => app.S.Save();
+            Controls.Add(b);
+            return b;
+        }
+
+        Rectangle ClipField(int i)
+        {
+            int x = Pad + S(158), w = (W - Pad - x - S(6)) / 2;
+            return new Rectangle(x + i * (w + S(6)), S(108), w, S(38));
+        }
+
+        void SyncClip()
+        {
+            bool show = !settingsOpen && app.S.Gif;
+            clipFrom.Visible = clipTo.Visible = show;
+            if (!show) return;
+            for (int i = 0; i < 2; i++)
+            {
+                var f = ClipField(i);
+                var box = i == 0 ? clipFrom : clipTo;
+                // Lexend sits low in its line, so the box moves up a little to match the label beside it
+                box.SetBounds(f.X + S(42), f.Y + (f.Height - box.PreferredHeight) / 2 - S(2), f.Width - S(42) - S(8), box.PreferredHeight);
+            }
         }
 
         protected override CreateParams CreateParams
@@ -133,6 +173,7 @@ namespace Pour
             }
             var uf = UrlField;
             url.SetBounds(uf.X + S(14), uf.Y + (uf.Height - url.PreferredHeight) / 2, uf.Width - S(14) - S(40), url.PreferredHeight);
+            SyncClip();
         }
 
         public void ShowNearTray()
@@ -187,7 +228,7 @@ namespace Pour
         protected override void OnVisibleChanged(EventArgs e)
         {
             base.OnVisibleChanged(e);
-            if (!Visible && settingsOpen) { settingsOpen = false; url.Visible = true; }
+            if (!Visible && settingsOpen) { settingsOpen = false; url.Visible = true; SyncClip(); }
         }
 
         protected override void OnDeactivate(EventArgs e)
@@ -208,6 +249,7 @@ namespace Pour
 
         void Submit(bool openWhenDone)
         {
+            if (app.S.Gif && !Fmt.GifRange(clipFrom.Text, clipTo.Text, out _, out _)) { clipError = true; Invalidate(); return; }
             var urls = Fmt.AnyUrls(url.Text);
             if (urls.Count == 0) urls = Fmt.OnlyUrls(App.ReadClipboard());
             if (urls.Count == 0) { urlError = true; Invalidate(); url.Focus(); return; }
@@ -327,9 +369,24 @@ namespace Pour
 
             // format + quality
             var st = app.S;
-            Segmented(g, new Rectangle(Pad, S(108), S(128), S(38)), new[] { "MP4", "MP3" }, st.Mp3 ? 1 : 0, "fmt", i => { st.Mp3 = i == 1; st.Save(); Invalidate(); });
-            var qr = new Rectangle(Pad + S(136), S(108), W - Pad * 2 - S(136), S(38));
-            if (st.Mp3)
+            Segmented(g, new Rectangle(Pad, S(108), S(150), S(38)), new[] { "MP4", "MP3", "GIF" }, st.Gif ? 2 : st.Mp3 ? 1 : 0, "fmt", i =>
+            {
+                st.Mp3 = i == 1; st.Gif = i == 2; clipError = false;
+                st.Save(); SyncClip(); Invalidate();
+            });
+            var qr = new Rectangle(Pad + S(158), S(108), W - Pad * 2 - S(158), S(38));
+            if (st.Gif)
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    var f = ClipField(i);
+                    Theme.Fill(g, f, Theme.Card, S(9));
+                    if (clipError) Theme.Stroke(g, f, Theme.Red, S(9), Math.Max(1, s));
+                    else if ((i == 0 ? clipFrom : clipTo).Focused) Theme.Stroke(g, f, Theme.Accent, S(9), Math.Max(1, s));
+                    TextRenderer.DrawText(g, i == 0 ? "From" : "To", fSmall, new Rectangle(f.X + S(10), f.Y, S(34), f.Height), Theme.Sub, L);
+                }
+            }
+            else if (st.Mp3)
             {
                 Theme.Fill(g, qr, Theme.Card, S(9));
                 TextRenderer.DrawText(g, st.EmbedExtras ? "Best audio, with cover" : "Best audio quality", fBody, qr, Theme.Sub, C);
@@ -346,10 +403,10 @@ namespace Pour
 
             // playlist switch + clear
             var tr = new Rectangle(Pad, S(202), S(170), S(28));
-            bool plHot = hover == "pl";
-            Switch(g, new Rectangle(Pad, tr.Y + (tr.Height - S(20)) / 2, S(36), S(20)), st.Playlist, plHot);
-            TextRenderer.DrawText(g, "Whole playlist", fBody, new Rectangle(Pad + S(46), tr.Y, S(124), tr.Height), plHot || st.Playlist ? Theme.Text : Theme.Sub, L);
-            AddHit(tr, "pl", () => { st.Playlist = !st.Playlist; st.Save(); Invalidate(); });
+            bool plHot = hover == "pl" && !st.Gif, plOn = st.Playlist && !st.Gif;
+            Switch(g, new Rectangle(Pad, tr.Y + (tr.Height - S(20)) / 2, S(36), S(20)), plOn, plHot);
+            TextRenderer.DrawText(g, "Whole playlist", fBody, new Rectangle(Pad + S(46), tr.Y, S(124), tr.Height), st.Gif ? Theme.Dim : plHot || plOn ? Theme.Text : Theme.Sub, L);
+            if (!st.Gif) AddHit(tr, "pl", () => { st.Playlist = !st.Playlist; st.Save(); Invalidate(); });
 
             if (app.Dl.Jobs.Any(j => !j.Active))
             {
@@ -401,7 +458,8 @@ namespace Pour
             var fr = new Rectangle(Pad, Height - FooterH, W - Pad * 2, FooterH - S(6));
             string status = app.Status;
             Color sc = app.StatusIsError ? Theme.Red : Theme.Dim;
-            if (string.IsNullOrEmpty(status))
+            if (clipError) { status = "Use times like 1:20. A GIF can be up to " + Fmt.MaxGifSeconds + " seconds."; sc = Theme.Red; }
+            else if (string.IsNullOrEmpty(status))
             {
                 int running = jobs.Count(j => j.State == JobState.Running), queued = jobs.Count(j => j.State == JobState.Queued);
                 status = running + queued > 0 ? running + " pouring" + (queued > 0 ? " · " + queued + " waiting" : "") : "Saving to " + ShortFolder(st.Folder);
@@ -426,7 +484,7 @@ namespace Pour
             AddHit(r, rowKey, () => { if (j.State == JobState.Done) app.OpenResult(j); }, rowMenu);
 
             var inner = Rectangle.Inflate(r, -S(8), 0);
-            string fmt = j.Mp3 ? "MP3" : "MP4 · " + Settings.QualityLabel(j.Quality);
+            string fmt = j.Gif ? "GIF · " + Fmt.Clock(j.ClipFrom) + " to " + Fmt.Clock(j.ClipTo) : j.Mp3 ? "MP3" : "MP4 · " + Settings.QualityLabel(j.Quality);
 
             string right; Color rc; Color bar;
             switch (j.State)
@@ -501,7 +559,7 @@ namespace Pour
                 case JobState.Running:
                     if (j.Count > 1 && j.Index > 0) parts.Add(j.Index + " of " + j.Count);
                     if (j.Phase.Length > 0 && j.Phase != "Finishing") parts.Add(j.Phase);
-                    else if (j.Phase == "Finishing") parts.Add(j.Mp3 ? "converting to MP3" : "merging");
+                    else if (j.Phase == "Finishing") parts.Add(j.Gif ? "making GIF" : j.Mp3 ? "converting to MP3" : "merging");
                     if (!double.IsNaN(j.Total) && j.Total > 0) parts.Add(Fmt.Size(j.Total));
                     var sp = Fmt.Speed(j.Speed); if (sp.Length > 0) parts.Add(sp);
                     var et = Fmt.Eta(j.Eta); if (et.Length > 0) parts.Add(et);
@@ -676,6 +734,8 @@ namespace Pour
         {
             if (settings) ShowSettings(); else if (settingsOpen) ShowMain();
             DrawToBitmap(b, new Rectangle(0, 0, Width, Height));
+            // a hidden form skips its child boxes
+            if (!settings && app.S.Gif) foreach (var box in new[] { clipFrom, clipTo }) box.DrawToBitmap(b, box.Bounds);
         }
     }
 }
